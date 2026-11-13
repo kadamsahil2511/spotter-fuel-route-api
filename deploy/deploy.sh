@@ -48,6 +48,15 @@ trim() {
   printf '%s' "$value"
 }
 
+host_listed() {
+  local hosts="$1"
+  local needle="$2"
+  case ",${hosts}," in
+    *,"${needle}",*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 env_value() {
   local key="$1"
   local line value first last
@@ -80,8 +89,8 @@ if [[ -z "$allowed_hosts" || "$allowed_hosts" == "localhost,127.0.0.1" ]]; then
     echo "DJANGO_ALLOWED_HOSTS in .env is the dev list. Keeping the production host list."
   fi
   export DJANGO_ALLOWED_HOSTS="$prod_hosts"
-elif [[ "$allowed_hosts" != *127.0.0.1* ]]; then
-  echo "DJANGO_ALLOWED_HOSTS in .env does not include 127.0.0.1. The container healthcheck would fail." >&2
+elif ! host_listed "$allowed_hosts" "127.0.0.1"; then
+  echo "DJANGO_ALLOWED_HOSTS in .env has no exact 127.0.0.1 entry. The container healthcheck would fail." >&2
   exit 1
 else
   export DJANGO_ALLOWED_HOSTS="$allowed_hosts"
@@ -150,9 +159,20 @@ if [[ -n "$PREVIOUS_TAG" && "$PREVIOUS_TAG" != "$NEW_TAG" ]]; then
   echo "Rollback: IMAGE_TAG=${PREVIOUS_TAG} docker compose -p spotter up -d --no-build"
 fi
 
+restore_previous() {
+  if [[ -n "${PREVIOUS_TAG:-}" && "${PREVIOUS_TAG}" != "${NEW_TAG:-}" ]]; then
+    echo "Restoring spotter-web:${PREVIOUS_TAG}" >&2
+    IMAGE_TAG="$PREVIOUS_TAG" docker compose -p spotter up -d --no-build
+  fi
+}
+
 export IMAGE_TAG="$NEW_TAG"
 echo "Releasing spotter-web:${IMAGE_TAG}"
-docker compose -p spotter up -d --build
+if ! docker compose -p spotter up -d --build; then
+  echo "Compose up failed." >&2
+  restore_previous
+  exit 1
+fi
 
 echo "Waiting for Spotter health"
 healthy=0
@@ -166,10 +186,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 if [[ "$healthy" -ne 1 ]]; then
   echo "Spotter health check failed." >&2
-  if [[ -n "$PREVIOUS_TAG" && "$PREVIOUS_TAG" != "$NEW_TAG" ]]; then
-    echo "Restoring spotter-web:${PREVIOUS_TAG}" >&2
-    IMAGE_TAG="$PREVIOUS_TAG" docker compose -p spotter up -d --no-build
-  fi
+  restore_previous
   exit 1
 fi
 

@@ -35,7 +35,7 @@ bash deploy/deploy.sh
 IMAGE_TAG=<git short sha> docker compose -p spotter up -d --build
 ```
 
-The image is `spotter-web:<sha>`. After the health check passes, that image is also tagged `latest`. The previous tag is written to `.deploy-previous-tag` and left on disk. If the health check fails and a previous tag exists, the script starts that tag again. `IMAGE_TAG` defaults to `latest` when Compose is started without the script, so an `.env` that never mentions `IMAGE_TAG` still resolves.
+The image is `spotter-web:<sha>`. After the health check passes, that image is also tagged `latest`. The previous tag is written to `.deploy-previous-tag` and left on disk. If Compose fails while replacing the container, or the health check fails, and a previous tag exists, the script starts that tag again. `DJANGO_ALLOWED_HOSTS` must list `127.0.0.1` as its own entry. A value that only contains those characters inside another host, such as `127.0.0.10`, is refused. `IMAGE_TAG` defaults to `latest` when Compose is started without the script, so an `.env` that never mentions `IMAGE_TAG` still resolves.
 
 The first run of this script on an existing clone has to update the checkout before the new script is what executes:
 
