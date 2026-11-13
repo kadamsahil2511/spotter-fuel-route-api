@@ -1,0 +1,10 @@
+.venv
+.git
+data/geocode
+**/__pycache__
+db.sqlite3
+db.sqlite3-wal
+db.sqlite3-shm
+staticfiles
+*.log
+.env

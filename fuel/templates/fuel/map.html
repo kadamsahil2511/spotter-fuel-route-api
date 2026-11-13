@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ plan.start.label }} to {{ plan.finish.label }}</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html, body { margin: 0; height: 100%; font: 15px/1.4 system-ui, sans-serif; color: #1c1917; }
+    #map { position: absolute; inset: 0; }
+    .panel {
+      position: absolute; z-index: 500; top: 12px; left: 12px; max-width: 340px;
+      background: #fff; border-radius: 10px; padding: 12px 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.18); max-height: calc(100% - 24px); overflow: auto;
+    }
+    h1 { font-size: 16px; margin: 0 0 6px; }
+    p { margin: 0 0 6px; }
+    .muted { color: #57534e; font-size: 13px; }
+    ol { margin: 8px 0 0; padding-left: 18px; }
+    li { margin: 0 0 4px; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>{{ plan.start.label }} → {{ plan.finish.label }}</h1>
+    <p>{{ plan.route.distance_miles }} miles · ${{ plan.total_fuel_cost }} fuel · {{ plan.fuel_stops|length }} stop{{ plan.fuel_stops|length|pluralize }}</p>
+    <p class="muted">Tank starts full (500 miles not billed). 10 mpg. Stops minimize dollars on this route.</p>
+    {% if not plan.feasible %}
+      <p>No complete fuel plan: {{ plan.gap.reason }} (mile {{ plan.gap.from_mile }} to {{ plan.gap.to_mile }}).</p>
+    {% endif %}
+    {% if plan.fuel_stops %}
+      <ol>
+        {% for stop in plan.fuel_stops %}
+          <li>{{ stop.city }}, {{ stop.state }} — ${{ stop.cost }} at ${{ stop.price_per_gallon }}/gal</li>
+        {% endfor %}
+      </ol>
+    {% endif %}
+  </div>
+  <div id="map"></div>
+  {{ plan|json_script:"plan-data" }}
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const plan = JSON.parse(document.getElementById("plan-data").textContent);
+    const map = L.map("map");
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors. Routing by OSRM / OpenRouteService. Geocoding by Photon and the US Census.'
+    }).addTo(map);
+    const line = L.geoJSON({type: "Feature", geometry: plan.route.geometry, properties: {}}, {
+      style: {color: "#1d4ed8", weight: 6, opacity: 0.9}
+    }).addTo(map);
+    const start = [plan.start.lat, plan.start.lng];
+    const finish = [plan.finish.lat, plan.finish.lng];
+    L.circleMarker(start, {radius: 7, color: "#15803d", fillOpacity: 1}).addTo(map).bindPopup("Start: " + plan.start.label);
+    L.circleMarker(finish, {radius: 7, color: "#b91c1c", fillOpacity: 1}).addTo(map).bindPopup("Finish: " + plan.finish.label);
+    plan.fuel_stops.forEach((stop) => {
+      const html = "<strong>" + stop.name + "</strong><br>" + stop.city + ", " + stop.state
+        + "<br>$" + stop.price_per_gallon.toFixed(3) + "/gal · " + stop.gallons + " gal · $" + stop.cost.toFixed(2)
+        + "<br>mile " + stop.mile_marker;
+      L.marker([stop.location.lat, stop.location.lng]).addTo(map).bindPopup(html);
+    });
+    map.fitBounds(line.getBounds(), {padding: [24, 24]});
+  </script>
+</body>
+</html>

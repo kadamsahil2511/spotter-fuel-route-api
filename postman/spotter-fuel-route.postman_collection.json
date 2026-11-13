@@ -1,0 +1,103 @@
+{
+  "info": {
+    "name": "Spotter fuel route",
+    "description": "Fuel-stop API. Set baseUrl to http://127.0.0.1:8000 for runserver or https://spotter.kadamsahil.com on the VPS.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key": "baseUrl", "value": "http://127.0.0.1:8000"}
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {"method": "GET", "url": "{{baseUrl}}/api/v1/health"}
+    },
+    {
+      "name": "New York to Los Angeles",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route?start=New York, NY&finish=Los Angeles, CA",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "route"],
+          "query": [
+            {"key": "start", "value": "New York, NY"},
+            {"key": "finish", "value": "Los Angeles, CA"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Chicago to Houston",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route?start=Chicago, IL&finish=Houston, TX",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "route"],
+          "query": [
+            {"key": "start", "value": "Chicago, IL"},
+            {"key": "finish", "value": "Houston, TX"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Chicago to Houston lat lng",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": {\"lat\": 41.8781, \"lng\": -87.6298},\n  \"finish\": {\"lat\": 29.7604, \"lng\": -95.3698}\n}\n"
+        },
+        "url": "{{baseUrl}}/api/v1/route"
+      }
+    },
+    {
+      "name": "New York to Philadelphia (under 500 miles)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route?start=New York, NY&finish=Philadelphia, PA",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "route"],
+          "query": [
+            {"key": "start", "value": "New York, NY"},
+            {"key": "finish", "value": "Philadelphia, PA"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Reject Toronto",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/route?start=Toronto, ON&finish=Chicago, IL",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "route"],
+          "query": [
+            {"key": "start", "value": "Toronto, ON"},
+            {"key": "finish", "value": "Chicago, IL"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Chicago to Houston map",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/map?start=Chicago, IL&finish=Houston, TX",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "map"],
+          "query": [
+            {"key": "start", "value": "Chicago, IL"},
+            {"key": "finish", "value": "Houston, TX"}
+          ]
+        }
+      }
+    }
+  ]
+}
