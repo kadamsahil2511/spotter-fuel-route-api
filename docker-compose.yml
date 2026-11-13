@@ -1,0 +1,87 @@
+name: spotter
+
+services:
+  web:
+    container_name: spotter-web
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_DEBUG: "0"
+      SQLITE_PATH: /data/db.sqlite3
+      REDIS_URL: redis://redis:6379/0
+      WEB_CONCURRENCY: "2"
+      GUNICORN_THREADS: "4"
+      DOMAIN: spotter.kadamsahil.com
+      # 127.0.0.1 and localhost stay so the container healthcheck (Host: 127.0.0.1) is not a 400.
+      DJANGO_ALLOWED_HOSTS: spotter.kadamsahil.com,srv1208763.hstgr.cloud,127.0.0.1,localhost
+      DJANGO_CSRF_TRUSTED_ORIGINS: https://spotter.kadamsahil.com
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - spotter_sqlite:/data
+    mem_limit: 512m
+    cpus: 0.75
+    cpu_shares: 512
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - spotter
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  redis:
+    container_name: spotter-redis
+    image: redis:7-alpine
+    mem_limit: 96m
+    cpu_shares: 256
+    command:
+      - redis-server
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "60"
+      - "1"
+    volumes:
+      - spotter_redis:/data
+    restart: unless-stopped
+    networks:
+      - spotter
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+networks:
+  spotter:
+    name: spotter_default
+
+volumes:
+  spotter_sqlite:
+    name: spotter_sqlite
+  spotter_redis:
+    name: spotter_redis
