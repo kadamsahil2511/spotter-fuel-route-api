@@ -124,7 +124,7 @@ Duplicate rows for one OPIS Truckstop ID use the minimum retail price. There is 
 
 - Both endpoints must be in the US. A trailing Canadian province is rejected. Coordinates must fall in the contiguous box, Alaska, or Hawaii. A point in Windsor, Ontario can still pass the box.
 - The CSV is truck-stop prices. California in the file is the Imperial Valley and Coachella Valley only. New York → Los Angeles still plans because the last Nevada stop leaves less than 500 miles. A route up the California coast can come back `feasible: false`.
-- Of 6,738 stops, 1,034 are a Photon fuel POI, 5,649 are a city centroid, and 55 have no coordinate and are excluded. A big-city centroid more than 10 miles from the interstate is not selected. `python3 scripts/geocode_stations.py --poi-only` resumes the POI pass.
+- Of 6,738 stops, 860 are a Photon POI whose name shares a distinctive word with the truck stop, 5,823 are a city centroid, and 55 have no coordinate and are excluded. A fuel POI is not kept when the name does not match, or when one coordinate was reused for different street addresses. A big-city centroid more than 10 miles from the interstate is not selected. `python3 scripts/geocode_stations.py --poi-only` resumes the POI pass.
 - The public OSRM demo allows about one request per second from a source IP and can refuse the address. On the VPS that budget is shared with everything else on `72.61.242.96`, including p1. Cached routes keep working.
 - Local `runserver` is one process, so the in-process limiter is enough. Production is two Gunicorn workers and requires `REDIS_URL`.
 

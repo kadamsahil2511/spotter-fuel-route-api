@@ -41,6 +41,11 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const plan = JSON.parse(document.getElementById("plan-data").textContent);
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
     const map = L.map("map");
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18,
@@ -51,12 +56,12 @@
     }).addTo(map);
     const start = [plan.start.lat, plan.start.lng];
     const finish = [plan.finish.lat, plan.finish.lng];
-    L.circleMarker(start, {radius: 7, color: "#15803d", fillOpacity: 1}).addTo(map).bindPopup("Start: " + plan.start.label);
-    L.circleMarker(finish, {radius: 7, color: "#b91c1c", fillOpacity: 1}).addTo(map).bindPopup("Finish: " + plan.finish.label);
+    L.circleMarker(start, {radius: 7, color: "#15803d", fillOpacity: 1}).addTo(map).bindPopup("Start: " + escapeHtml(plan.start.label));
+    L.circleMarker(finish, {radius: 7, color: "#b91c1c", fillOpacity: 1}).addTo(map).bindPopup("Finish: " + escapeHtml(plan.finish.label));
     plan.fuel_stops.forEach((stop) => {
-      const html = "<strong>" + stop.name + "</strong><br>" + stop.city + ", " + stop.state
-        + "<br>$" + stop.price_per_gallon.toFixed(3) + "/gal · " + stop.gallons + " gal · $" + stop.cost.toFixed(2)
-        + "<br>mile " + stop.mile_marker;
+      const html = "<strong>" + escapeHtml(stop.name) + "</strong><br>" + escapeHtml(stop.city) + ", " + escapeHtml(stop.state)
+        + "<br>$" + Number(stop.price_per_gallon).toFixed(3) + "/gal · " + Number(stop.gallons) + " gal · $" + Number(stop.cost).toFixed(2)
+        + "<br>mile " + Number(stop.mile_marker);
       L.marker([stop.location.lat, stop.location.lng]).addTo(map).bindPopup(html);
     });
     map.fitBounds(line.getBounds(), {padding: [24, 24]});

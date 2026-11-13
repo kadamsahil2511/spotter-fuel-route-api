@@ -63,11 +63,9 @@ PRIORITY = [
     "NY", "NJ", "PA", "OH", "IN", "IA", "NE", "KS", "CO",
     "WY", "UT", "NV", "TN", "MS", "KY", "AL", "GA",
 ]
-GENERIC = {
-    "THE", "AND", "OF", "A", "AT", "TRAVEL", "CENTER", "CENTRE", "CENTERS",
-    "STOP", "STOPS", "TRUCK", "TRUCKSTOP", "PLAZA", "FOOD", "FUEL", "SHOP",
-    "STORE", "STORES", "INC", "LLC", "CO", "COMPANY", "DBA", "NUMBER",
-}
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from fuel.services.poi_match import name_matches  # noqa: E402
 
 EARTH_MILES = 3958.7613
 INTERVAL = 0.4
@@ -177,15 +175,6 @@ def feature_state(props: dict) -> str:
     return upper
 
 
-def tokens(name: str) -> set[str]:
-    cleaned = []
-    for piece in name.upper().replace("#", " ").replace("&", " ").replace("/", " ").split():
-        piece = "".join(ch for ch in piece if ch.isalnum())
-        if len(piece) >= 3 and piece not in GENERIC and not piece.isdigit():
-            cleaned.append(piece)
-    return set(cleaned)
-
-
 def accept_poi(station: dict, feature: dict, city_hit: dict) -> bool:
     props = feature.get("properties") or {}
     coords = (feature.get("geometry") or {}).get("coordinates") or []
@@ -201,12 +190,7 @@ def accept_poi(station: dict, feature: dict, city_hit: dict) -> bool:
         return False
     if haversine(lat, lng, city_hit["lat"], city_hit["lng"]) > 25:
         return False
-    kind = f"{props.get('osm_key')}:{props.get('osm_value')}"
-    if kind in {"amenity:fuel", "highway:services", "amenity:truck_stop"}:
-        return True
-    station_tokens = tokens(station["name"])
-    result_tokens = tokens(props.get("name") or "")
-    return bool(station_tokens & result_tokens)
+    return name_matches(station["name"], props.get("name") or "")
 
 
 def _norm_name(value: str) -> str:

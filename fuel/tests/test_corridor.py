@@ -1,3 +1,5 @@
+import math
+
 from django.test import SimpleTestCase
 
 from fuel.services.corridor import candidates
@@ -13,6 +15,17 @@ class CorridorTests(SimpleTestCase):
         self.assertLess(pumps[0].station["cross_track_miles"], 1)
         self.assertGreater(pumps[0].mile, 100)
         self.assertLess(pumps[0].mile, distance)
+
+    def test_southern_station_inside_the_corridor_is_kept(self):
+        # At 29N, 9.5 miles east is about 0.16 degrees of longitude, wider than
+        # corridor_miles/69. The box has to use latitude or this stop is dropped.
+        coords = [(-95.0, 29.0), (-95.0, 30.0)]
+        miles_per_lng = 69.0 * math.cos(math.radians(29.0))
+        lng = -95.0 + 9.5 / miles_per_lng
+        station = _station(29.5, lng, "south")
+        pumps, _distance = candidates(coords, _length(coords), [station], 10)
+        self.assertEqual(len(pumps), 1)
+        self.assertLess(pumps[0].station["cross_track_miles"], 10)
 
     def test_point_fifty_miles_off_is_excluded(self):
         coords = [(-90.0, lat) for lat in (35 + i * 0.5 for i in range(11))]

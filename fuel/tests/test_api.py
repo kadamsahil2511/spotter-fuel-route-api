@@ -118,6 +118,9 @@ class RouteApiTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Pilot Town")
         self.assertContains(response, "leaflet")
+        self.assertContains(response, "function escapeHtml")
+        self.assertContains(response, "escapeHtml(plan.start.label)")
+        self.assertContains(response, "escapeHtml(stop.name)")
 
 
 class CatalogTests(SimpleTestCase):
