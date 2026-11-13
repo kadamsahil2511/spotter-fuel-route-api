@@ -6,7 +6,7 @@ Measured on 13 Nov 2026. Figures below are from the attached CSV and from single
 
 ## Decision
 
-Build a small Django 6.1 + DRF app. One OSRM driving-route call returns the road geometry. Station coordinates are precomputed offline and committed, so a request never geocodes a truck stop. Start and finish resolve locally when they are coordinates or `City, ST`; a street address may add one Photon lookup per endpoint. Fuel stops are chosen on that single route to minimize dollars spent, with a 500-mile tank that starts full and 10 mpg.
+Build a small Django 6.1 + DRF app and run it on the Hostinger VPS already used for other services. One OSRM driving-route call returns the road geometry. Station coordinates are precomputed offline and committed, so a request never geocodes a truck stop. Start and finish resolve locally when they are coordinates or `City, ST`; a street address may add one Photon lookup per endpoint. Fuel stops are chosen on that single route to minimize dollars spent, with a 500-mile tank that starts full and 10 mpg.
 
 ## Data we actually have
 
@@ -35,11 +35,15 @@ California is thin in a way that affects the demo. All 16 California rows are in
 | HTTP | `requests` |
 | Geo libraries | None. Haversine, point-to-segment, and a degree-cell grid are a few dozen lines |
 | Tests | `python manage.py test` (Django `TestCase` + `unittest.mock`) |
-| Server | `manage.py runserver` for the review and the Loom. Gunicorn is unnecessary for the demo |
+| App server | Gunicorn, 1 `gthread` worker, 4 threads. `runserver` is only for local development |
+| Edge | Caddy with automatic HTTPS, started only when nothing else is listening on 80/443. Otherwise attach to the proxy already on the VPS |
+| Process manager | Docker Compose, deployed by Coolify when Coolify is what already owns the box |
+| Static files | WhiteNoise, so static files do not depend on which proxy is in front |
+| Host | Hostinger KVM 1 — 1 vCPU, 4 GB RAM, 50 GB disk, Ubuntu 24.04 LTS. Public IPv4 `72.61.242.96`, hostname `srv1208763.hstgr.cloud`. No Hostinger firewall group |
 
 SQLite keeps setup to `pip install` and `migrate`. PostGIS and Redis would add install steps and would not make the hot path faster: the station set is about 6,700 points, and the route cache values are a few hundred kilobytes.
 
-Pinned in `requirements.txt`: `Django==6.1.3`, `djangorestframework==3.18.3`, `requests`. Dev-only pins stay empty unless a test tool is actually needed.
+Pinned in `requirements.txt`: `Django==6.1.3`, `djangorestframework==3.18.3`, `requests`, `gunicorn`, `whitenoise`. Dev-only pins stay empty unless a test tool is actually needed.
 
 Configuration is environment variables, with defaults that work with no key. `.env.example` lists them. `.env` is gitignored. Nothing secret is committed.
 
@@ -51,6 +55,14 @@ Configuration is environment variables, with defaults that work with no key. `.e
 | `CORRIDOR_MILES` | `10` |
 | `TANK_RANGE_MILES` | `500` |
 | `MPG` | `10` |
+| `DJANGO_DEBUG` | `1` locally, `0` on the VPS |
+| `DJANGO_SECRET_KEY` | required when `DJANGO_DEBUG=0`. Generated on the server, never committed |
+| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` locally. On the VPS: `spotter.kadamsahil.com,srv1208763.hstgr.cloud` |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | `https://spotter.kadamsahil.com` on the VPS |
+| `SQLITE_PATH` | local file in dev. `/data/db.sqlite3` on the VPS (the persistent volume) |
+| `WEB_CONCURRENCY` | `1` |
+| `GUNICORN_THREADS` | `4` |
+| `DOMAIN` | `spotter.kadamsahil.com` |
 
 ## Routing and geocoding
 
@@ -107,7 +119,7 @@ A map page does not add a routing call. The HTML view runs the same server-side 
 
 No per-station geocoding, no isochrones, no matrix, no alternative-route call. `alternatives=false` on purpose: a second geometry doubles memory and would change which stops are "on the route" without a product decision. OSRM can return an alternative in the same HTTP call; that is left out so the map shows one route.
 
-User-Agent on every outbound call identifies the app. OSRM is not called faster than once a second even on a cold cache miss storm (a process-wide lock / minimum interval). Photon is only contacted on gazetteer miss.
+User-Agent on every outbound call identifies the app. OSRM is not called faster than once a second from this app, even on a cold cache miss storm. The limiter is a lock in the one Gunicorn process. On the VPS that lock is necessary but not sufficient: the public demo quota is per source IP, and every container on `72.61.242.96` shares it. Photon is only contacted on gazetteer miss.
 
 ## Offline station geocoding
 
@@ -308,11 +320,14 @@ Money is rounded to cents in the JSON. Internal math uses decimals.
 manage.py
 requirements.txt
 .env.example
-README.md                 # setup, samples, algorithm, timings (written with the implementation)
+Dockerfile
+docker-compose.yml        # web service, optional caddy behind the "edge" profile
+Caddyfile                 # used only when this stack owns 80/443
+README.md                 # setup, samples, algorithm, timings, deploy runbook
 PLAN.md
 postman/spotter-fuel-route.postman_collection.json
 data/fuel-prices.csv
-data/stations.json        # committed geocode output
+data/stations.json        # committed geocode output, baked into the image
 data/us_places.json       # Census place centroids, City|ST → [lat, lng]
 config/                   # Django project (settings, urls, wsgi)
 fuel/
@@ -375,8 +390,8 @@ From the OSRM measurements above, the network call dominates.
 
 How:
 
-- Station grid built once per process from `stations.json`.
-- Route cache key: provider, start/finish rounded to 4 decimal degrees, range, mpg, corridor. Value: polyline, distance, duration. SQLite so a restart (and the Loom's second take) stays warm. LocMem in front so a hit does not parse SQLite on every poll.
+- Station grid built once per process from `stations.json`. Production runs a single Gunicorn process so there is one copy of that grid.
+- Route cache key: provider, start/finish rounded to 4 decimal degrees, range, mpg, corridor. Value: polyline, distance, duration. SQLite so a restart (and the Loom's second take) stays warm. LocMem in front so a hit does not parse SQLite on every poll. LocMem is per process, which is another reason to stay at one worker.
 - Geocode cache keyed by the normalized query string.
 - Client geometry simplified; full geometry kept for the mile axis and not stored twice in the response.
 - One OSRM attempt plus a single retry on connection reset. Timeout 10 s.
@@ -388,7 +403,8 @@ The README will include the measured `elapsed_ms` for the two sample routes, col
 README (written with the code, not in this commit):
 
 - What the service does, the stack pins, and the OSRM / Photon choice including the usage limits.
-- Setup: venv, `pip install -r requirements.txt`, `migrate`, `runserver`. No geocode step required.
+- Local setup: venv, `pip install -r requirements.txt`, `migrate`, `runserver`. No geocode step required.
+- Deploy runbook for the Hostinger VPS (the short version of the Deployment section).
 - Sample GET and the sample JSON, plus the two measured timings.
 - The algorithm and the assumptions (full tank not billed, min price per OPIS ID, 10-mile corridor, detour not billed, single fastest route).
 - California coverage limit.
@@ -408,13 +424,179 @@ Postman collection committed. No Loom in the repo; the README will say the 5-min
 7. `city_centroid` geocodes are eligible. `unresolved` geocodes are not.
 8. Range and mpg default to 500 and 10 and can be overridden per request so tests can use small numbers.
 
+## Deployment
+
+Target: `https://spotter.kadamsahil.com` on the existing Hostinger VPS.
+
+| | |
+|---|---|
+| Plan | Hostinger KVM 1 |
+| CPU / RAM / disk | 1 vCPU, 4 GB RAM, 50 GB disk |
+| OS | Ubuntu 24.04 LTS |
+| Public IPv4 | `72.61.242.96` |
+| Hostname | `srv1208763.hstgr.cloud` |
+| Hostinger firewall group | none. Filtering, if any, is `ufw` on the VM |
+| Other workloads | Assumed present. Ports 80 and 443 are not assumed free |
+
+Coolify is how this box is usually managed. The repo still ships a Caddy service, and the runbook starts it only after checking that nothing else is bound to 80/443.
+
+### Images and compose
+
+`Dockerfile` (multi-stage is unnecessary at this size):
+
+- Base `python:3.12-slim`.
+- Install the pinned requirements, copy the project, `collectstatic` into the image.
+- Run as a non-root user.
+- `SQLITE_PATH` defaults to `/data/db.sqlite3`. The directory is a volume, so the cache survives image rebuilds. `stations.json` and `us_places.json` stay in the image; they are read-only inputs, not runtime state.
+- Entrypoint runs `migrate` then Gunicorn. A failed migration refuses to serve.
+
+```
+gunicorn config.wsgi:application \
+  --bind 0.0.0.0:8000 \
+  --workers ${WEB_CONCURRENCY:-1} \
+  --worker-class gthread \
+  --threads ${GUNICORN_THREADS:-4} \
+  --timeout 30 \
+  --graceful-timeout 10 \
+  --keep-alive 5 \
+  --max-requests 500 \
+  --max-requests-jitter 50 \
+  --access-logfile - \
+  --error-logfile -
+```
+
+`docker-compose.yml` has two services:
+
+- `web` builds the Dockerfile, reads `.env`, mounts named volume `sqlite_data` at `/data`, exposes 8000 on the compose network only, and has the health check below. `restart: unless-stopped`.
+- `caddy` uses `caddy:2`, the repo `Caddyfile`, and named volumes for certs and Caddy data. It is behind Compose profile `edge` and is the only service that publishes `80:80` and `443:443`. It `reverse_proxy`s to `web:8000`.
+
+`Caddyfile` when this stack owns the edge:
+
+```
+{$DOMAIN} {
+    encode gzip
+    reverse_proxy web:8000
+}
+```
+
+Caddy obtains and renews the Let's Encrypt certificate for `spotter.kadamsahil.com` by itself. Django does not redirect HTTP to HTTPS. The health check talks to Gunicorn over plain HTTP inside the network; a Django-level redirect would mark the container unhealthy.
+
+### Workers on 1 vCPU and 4 GB
+
+The usual `2 * CPU + 1` formula would start 3 sync workers. That is the wrong default here.
+
+Each worker is a process. Each process loads its own station grid and its own LocMem route cache. The grid is not huge (about 6,700 stations), but the box has 4 GB shared with Ubuntu, Coolify or Caddy, and whatever else is already running. Three copies of the app buy no CPU on a single core and spend the RAM on duplicate grids.
+
+One `gthread` worker with 4 threads keeps a single grid and a single LocMem. Threads cover the wait on OSRM, which is most of a cache miss. SQLite uses WAL and `timeout` of about 20 seconds. `CONN_MAX_AGE` stays 0 so each request takes a short-lived connection; that is the safe setting with threads and SQLite. `--preload` is not used. Forking would look like shared memory and then copy the grid as soon as Python writes to those objects.
+
+If a later measurement shows the one process busy, the next step is 2 workers, not 3, and the OSRM limiter has to move to a file lock. Two processes on one IP can otherwise each send one OSRM call in the same second.
+
+### OSRM quota is per server IP
+
+`router.project-osrm.org` allows about one request per second from a client, and it sees the VPS address `72.61.242.96`, not a worker id. Every Gunicorn thread, every extra worker, and any other container on this machine draws from that same budget. The in-process lock keeps this app at one outbound route call per second. It cannot see a second container that also calls OSRM. The route cache is what keeps the demo off that limit: a repeated New York → Los Angeles request makes zero OSRM calls. The README will say the public demo can still throttle the whole IP if something else on the box is noisy.
+
+### Django settings that only matter on the VPS
+
+- `DJANGO_DEBUG=0`. The default local `.env` may use `1`. The image entrypoint refuses to boot when debug is on and `DOMAIN` is set, so a copied dev env cannot be what Coolify runs.
+- `DJANGO_ALLOWED_HOSTS=spotter.kadamsahil.com,srv1208763.hstgr.cloud`. The hostname is there so a local `curl` to the box works before the name is delegated. The raw IPv4 is left out; Hostinger's firewall group is empty, and publishing the API on the bare IP is not the demo URL.
+- `DJANGO_CSRF_TRUSTED_ORIGINS=https://spotter.kadamsahil.com`.
+- `SECURE_PROXY_SSL_HEADER` so Django treats `X-Forwarded-Proto: https` from Caddy, Traefik, or Coolify's proxy as HTTPS. `SESSION_COOKIE_SECURE` and `CSRF_COOKIE_SECURE` on. No `SECURE_SSL_REDIRECT`.
+- DRF authentication for this API is `AllowAny` without session auth, so Postman can `POST /api/v1/route` without a CSRF cookie. The trusted-origin setting still applies to anything that uses the browsable API.
+- `SECRET_KEY` comes from the environment. There is no fallback key when debug is off.
+
+### Static files
+
+WhiteNoise serves `/static/` from the app container, with compressed files collected at image build. That works behind this stack's Caddy, behind Coolify's proxy, and behind a Caddy or Traefik that was already on the machine. A Caddy `file_server` for `/static/` would have to be copied into every proxy we might attach to, so it is not the plan.
+
+The map page is a Django HTML response, not a static file. Leaflet and the map tiles load from their public CDNs and from OpenStreetMap. The container does not proxy tile traffic.
+
+### SQLite volume
+
+Named volume `sqlite_data` → `/data`. The file holds `RouteCache`, `GeocodeCache`, and Django's own tables. Losing the container must not lose the cache; the whole point of the cache is that a restart and a second Loom take stay at zero OSRM calls.
+
+The volume is a normal Docker named volume when using Compose directly. In Coolify it is a persistent volume mounted at `/data`, declared in the compose file so a redeploy does not create a fresh empty disk. WAL and shared-memory files (`db.sqlite3-wal`, `db.sqlite3-shm`) stay on that same volume.
+
+Station coordinates are not in SQLite. Replacing the image is how a new `stations.json` ships.
+
+### Health check
+
+`GET /api/v1/health` does not call OSRM or Photon.
+
+- `200` `{"status":"ok","stations": N}` when the grid loaded. `N` is the number of stations actually in memory, including Canadian rows that survived geocoding.
+- `503` when the grid failed to load. The process is up and the data is not, and the proxy should not send traffic.
+
+Compose healthcheck and the image `HEALTHCHECK` both request `http://127.0.0.1:8000/api/v1/health` every 30 seconds. Coolify is pointed at the same path.
+
+### Detect the proxy, then attach
+
+Run this on the VPS before the first start. Do not publish 80 or 443 until it is clear they are free.
+
+```
+ss -ltnp | awk 'NR==1 || /:80 |:443 /'
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'
+ufw status
+```
+
+Read the listeners and the container names.
+
+| What is bound to 80/443 | What we start |
+|---|---|
+| Nothing | `docker compose --profile edge up -d --build`. Our Caddy takes 80/443 and gets the certificate. |
+| `coolify-proxy` (Traefik or Caddy) | `web` only. Do not use the `edge` profile. In Coolify, create a Docker Compose resource from this repo, set the domain to `spotter.kadamsahil.com`, and let Coolify's proxy terminate TLS and route to `web:8000`. The persistent volume is part of that resource. |
+| Some other Caddy | `web` only, published as `127.0.0.1:8000:8000`. Add a site block to the Caddyfile that is already running: `reverse_proxy 127.0.0.1:8000` for `spotter.kadamsahil.com`, then reload that Caddy. Do not start a second one. |
+| Traefik, not Coolify's | `web` only, attached to the existing Traefik Docker network, with router labels for host `spotter.kadamsahil.com` and service port 8000. Traefik keeps 80/443. |
+
+If `ufw` is active, 80 and 443 are already open for the current proxy. Do not add a public rule for 8000. Gunicorn is reachable from the proxy network or from localhost, not from `0.0.0.0:8000`.
+
+A second Caddy on a box that already has one fails the bind, and it can also answer ACME for a name the first proxy still serves. The profile exists so the repo is runnable on an empty VM; it is not the default on this VPS.
+
+### DNS
+
+In the Hostinger zone for `kadamsahil.com`, one A record:
+
+| Name | Type | Value |
+|---|---|---|
+| `spotter` | A | `72.61.242.96` |
+
+No AAAA record. An AAAA pointing somewhere else would send part of the traffic off this VPS and break certificate issuance. TTL stays the zone default.
+
+This write changes live DNS. It is not part of merging the plan. At deploy time the existing records are read first, the one-line change is shown, and it waits for an explicit yes before anything is written. If `spotter` already exists, it is updated in place.
+
+The Hostinger hostname `srv1208763.hstgr.cloud` already points at the VPS and is only a fallback `ALLOWED_HOSTS` entry. The public URL is the subdomain.
+
+### Deploy runbook
+
+After the plan is approved and the app builds locally:
+
+1. SSH to `72.61.242.96` and run the proxy detection above. Record which row of the table applies. Leave the existing proxy running.
+2. Confirm the DNS change (the A record above) and wait until `dig +short spotter.kadamsahil.com` returns `72.61.242.96`.
+3. Put `DJANGO_SECRET_KEY`, `DJANGO_DEBUG=0`, the allowed hosts, the CSRF origin, `SQLITE_PATH=/data/db.sqlite3`, `WEB_CONCURRENCY=1`, and `GUNICORN_THREADS=4` in the Coolify environment or in a server-side `.env`. Do not commit that file.
+4. Start `web` by the row chosen in step 1. Coolify builds from the repo. A manual start is `docker compose up -d --build` (no `--profile edge`) or `docker compose --profile edge up -d --build` when 80/443 were free.
+5. Confirm the volume mount and `docker compose exec web python manage.py migrate`.
+6. `curl -fsS http://127.0.0.1:8000/api/v1/health` on the VPS, then `curl -fsS https://spotter.kadamsahil.com/api/v1/health`.
+7. One cold `GET /api/v1/route` for Chicago, IL → Houston, TX, then the same GET again. The second response has `"cache": "hit"` and `"external_calls": {"geocode": 0, "route": 0}`. Then New York, NY → Los Angeles, CA, cold and warm.
+8. Open `https://spotter.kadamsahil.com/api/v1/map?start=Chicago,%20IL&finish=Houston,%20TX` and check the line and the stop markers.
+
+A redeploy rebuilds the image and keeps `sqlite_data`. It does not re-geocode stations.
+
+### Trade-offs
+
+- One worker leaves a core idle during an OSRM wait and limits parallelism to 4 threads. That matches a 1 vCPU box and a per-IP rate limit better than three sync workers do.
+- The station grid lives in that process. A worker recycle (`--max-requests 500`) reloads it. The reload is a short stall, not a correctness problem. The grid is small enough that this is cheap.
+- LocMem does not survive that recycle. SQLite does. The request after a recycle pays one SQLite read, not an OSRM call.
+- WhiteNoise adds a few megabytes to the image and skips a proxy-specific static config. Caddy serving `/static/` would be slightly less Python on the request, and it would have to be repeated for every proxy we might attach to.
+- Shipping our own Caddy is the right stack on an empty VM and the wrong one on this VPS if Coolify or another proxy already has 80/443. The profile makes that a switch, not a rewrite.
+- SQLite on a volume is the right cache for one process. It is the wrong cache if a second host is ever added. A second host is out of scope, and it would also split the OSRM budget across two IPs or double it, depending on egress.
+- The public OSRM demo can still refuse the IP. The app then returns 502 for cache misses until the cache is warm or the block lifts. Warm demo routes keep working. OpenRouteService remains the documented fallback and is not built unless this happens during implementation.
+
 ## Out of scope
 
-- Accounts, API keys for our own API, deployment, Docker.
+- Accounts and API keys for our own API.
+- A second VPS, a self-hosted OSRM, or moving the cache off SQLite.
+- Docker is in scope. Kubernetes is not.
 - Diesel vs gasoline split (the CSV does not say).
 - Turn-by-turn instructions, traffic, or elevation.
 - Re-routing through a cheaper region (`alternatives` stays off).
-- A self-hosted routing engine.
 - Charging the driver for the fuel already in the tank at mile 0.
 
 ## Implementation order, after approval
@@ -424,4 +606,6 @@ Postman collection committed. No Loom in the repo; the README will say the 5-min
 3. OSRM client, plan service, API, map page, route cache.
 4. Offline geocode command, run it, commit `data/stations.json` and `data/us_places.json`.
 5. API tests with mocked HTTP. Postman collection. README with real sample responses and timings from New York → Los Angeles and Chicago → Houston.
-6. Open the PR to `main` with those samples, timings, and a map screenshot.
+6. Dockerfile, Compose, Caddyfile, WhiteNoise, health check, production settings.
+7. Open the PR to `main` with those samples, timings, and a map screenshot.
+8. Deploy to the VPS only after that, and only once the proxy detection and the DNS change have an explicit yes. The A record for `spotter.kadamsahil.com` is a live DNS write and is confirmed on its own.
