@@ -1,6 +1,35 @@
 # Spotter fuel-route API
 
-Django API that plans a US driving route, chooses truck stops that minimize fuel spend for a 500-mile tank, and returns the route, the stops, the bill, and a map.
+Backend Django REST API. It plans a US drive and the truck stops that minimize fuel spend for a 500-mile tank.
+
+## Contents
+
+- [Live demo](#live-demo)
+- [What this is](#what-this-is)
+- [Quickstart](#quickstart)
+- [Project structure](#project-structure)
+- [Architecture](#architecture)
+- [Environment](#environment)
+- [API](#api)
+- [Performance](#performance)
+- [Data](#data)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Docker deploy](#docker-deploy)
+- [Postman](#postman)
+- [Decisions](#decisions)
+
+## Live demo
+
+- Health: https://spotter.kadamsahil.com/api/v1/health
+- Chicago, IL → Houston, TX: https://spotter.kadamsahil.com/api/v1/route?start=Chicago,%20IL&finish=Houston,%20TX
+- Map: https://spotter.kadamsahil.com/api/v1/map?start=Chicago,%20IL&finish=Houston,%20TX
+
+The same paths on a laptop use `http://127.0.0.1:8000`.
+
+## What this is
+
+This is a backend-only Django REST API. There is no separate frontend. `/api/v1/map` is a small server-rendered Leaflet page so a reviewer can see the line and the stops. The browser loads tiles. It does not call the router.
 
 ## Quickstart
 
@@ -12,38 +41,96 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 
 ```bash
 curl -sS 'http://127.0.0.1:8000/api/v1/route?start=Chicago,%20IL&finish=Houston,%20TX'
-```
-
-Map: http://127.0.0.1:8000/api/v1/map?start=Chicago,%20IL&finish=Houston,%20TX
-
-```bash
 python manage.py test fuel
 ```
 
-Every direct and transitive dependency is pinned in `requirements.txt`. They are pure-Python wheels (no GDAL or other system libraries). Defaults live in `config/settings.py`. `.env.example` lists the same variables; copying it is optional for local work. `ORS_API_KEY` is blank unless you want a fallback when the public OSRM demo fails.
+Dependencies in `requirements.txt` are pinned, including transitive packages. They are pure-Python wheels. Nothing needs GDAL or another system library.
 
-## API reference
+## Project structure
 
-`GET` or `POST /api/v1/route`
+| Path | Purpose |
+|---|---|
+| `manage.py` | Django entry point |
+| `config/settings.py` | Settings. LocMem when `REDIS_URL` is empty. Redis when it is set |
+| `config/urls.py` | Mounts `fuel.urls` |
+| `fuel/views.py` | `/`, `/api/v1/health`, `/route`, `/map` |
+| `fuel/services/plan.py` | Ties resolve, route, corridor, and optimizer into the JSON body |
+| `fuel/services/resolve.py` | Coordinates, Census gazetteer, or one Photon lookup. US check |
+| `fuel/services/routing.py` | One OSRM call. OpenRouteService only if that call fails and a key is set |
+| `fuel/services/limiter.py` | One OSRM start per second. Redis in production, in-process otherwise |
+| `fuel/services/corridor.py` | Stops within `corridor_miles` of the full route line |
+| `fuel/services/optimizer.py` | Minimum dollars on that line. Starting tank is not billed |
+| `fuel/services/geo.py` | Haversine, polyline, mile markers, Douglas–Peucker |
+| `fuel/services/stations.py` | Loads `data/stations.json` once per process |
+| `fuel/services/poi_match.py` | Brand-word overlap required before a Photon hit is a specific stop |
+| `fuel/services/regions.py` | US and Canadian state names. Point-in-US boxes |
+| `fuel/services/catalog.py` | CSV collapse: one row per OPIS ID, minimum price |
+| `fuel/templates/fuel/map.html` | Leaflet page. Popup text is escaped |
+| `fuel/tests/` | 22 tests. No network |
+| `data/stations.json` | Precomputed stops. Required at runtime |
+| `data/us_places.json` | Census place centroids for `City, ST` |
+| `data/fuel-prices.csv` | Source prices. Not read on a request |
+| `scripts/geocode_stations.py` | Resumable offline geocoder |
+| `scripts/build_places.py` | Rebuilds the Census gazetteer JSON |
+| `Dockerfile`, `docker-compose.yml` | Gunicorn on `127.0.0.1:8001` plus a private Redis |
+| `docker/entrypoint.sh` | Migrate, then Gunicorn. Refuses debug when `DOMAIN` is set |
+| `deploy/deploy.sh` | VPS start. Checks p1 first |
+| `deploy/install-nginx.sh` | New nginx site, `nginx -t`, reload, optional Certbot |
+| `deploy/nginx/spotter.kadamsahil.com.conf` | Proxy to `127.0.0.1:8001` |
+| `postman/spotter-fuel-route.postman_collection.json` | Collection. `baseUrl` defaults to localhost:8000 |
+| `docs/` | Longer reference: API fields, data, tests, deploy, decisions |
 
-| Field | Default | Meaning |
-|---|---|---|
-| `start`, `finish` | required | `City, ST`, `City, State`, `"lat,lng"`, or `{"lat", "lng"}` |
-| `range_miles` | 500 | Tank range |
-| `mpg` | 10 | Miles per gallon |
-| `corridor_miles` | 10 | How far off the route a stop may sit |
+## Architecture
 
-`GET /api/v1/health` returns `200` with the number of loaded stations. `GET /api/v1/map` is the same plan as HTML with a Leaflet map. `GET /` lists the paths.
-
-Outside the US is HTTP 400. OSRM down, with no `ORS_API_KEY`, is HTTP 502. A route that cannot be fueled is still HTTP 200, with `"feasible": false` and a `gap`.
-
-Request:
-
-```bash
-curl -sS 'http://127.0.0.1:8000/api/v1/route?start=Chicago,%20IL&finish=Houston,%20TX'
+```mermaid
+flowchart LR
+  client[Client] --> api[Django route view]
+  api --> geo{Place}
+  geo -->|City ST or coordinates| local[Census gazetteer]
+  geo -->|street address| photon[Photon once]
+  api --> cache{Plan cache}
+  cache -->|hit| json[JSON response]
+  cache -->|miss| lease[OSRM lease 1 per second]
+  lease --> osrm[OSRM full geometry]
+  osrm -->|failure and ORS key| ors[OpenRouteService]
+  osrm --> corridor[Corridor match]
+  ors --> corridor
+  corridor --> opt[Optimizer]
+  opt --> json
+  json --> map[Leaflet map page]
 ```
 
-Response from that call (geometry shortened; the live body has 209 points, and the file is `docs/samples/chi-hou-cold.json`):
+Detail is in [docs/decisions.md](docs/decisions.md).
+
+## Environment
+
+Copy `.env.example` only if you want to override a default. Local `runserver` works with an empty environment.
+
+| Variable | Default | Used for |
+|---|---|---|
+| `DJANGO_DEBUG` | `1` | `0` on the VPS. Debug on plus `DOMAIN` set refuses to boot in Docker |
+| `DJANGO_SECRET_KEY` | dev key when debug is on | Required when `DJANGO_DEBUG=0` |
+| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Compose sets the public names and keeps `127.0.0.1,localhost` for the healthcheck |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | `https://spotter.kadamsahil.com` on the VPS. The API does not use session auth |
+| `SQLITE_PATH` | `db.sqlite3` | Django tables only. `/data/db.sqlite3` in Docker |
+| `REDIS_URL` | empty | Empty: LocMem and an in-process limiter. Compose sets `redis://redis:6379/0` |
+| `OSRM_BASE_URL` | `https://router.project-osrm.org` | Driving route. No key |
+| `PHOTON_BASE_URL` | `https://photon.komoot.io` | Street addresses and towns missing from the gazetteer. No key |
+| `ORS_BASE_URL` | `https://api.heigit.org` | Used only after OSRM fails |
+| `ORS_API_KEY` | empty | Leave empty. One directions call when OSRM fails and this is set |
+| `ROUTING_USER_AGENT` | `SpotterFuelRoute/1.0 (assessment)` | Sent on every outbound call |
+| `STATIONS_PATH` | `data/stations.json` | Stop file |
+| `PLACES_PATH` | `data/us_places.json` | Census places |
+| `DOMAIN` | empty | Set in Compose so a debug env cannot boot |
+| `WEB_CONCURRENCY` | `2` in the image | Gunicorn processes. Local `runserver` ignores it |
+| `GUNICORN_THREADS` | `4` in the image | Threads per worker |
+| `CORRIDOR_MILES`, `TANK_RANGE_MILES`, `MPG` | `10`, `500`, `10` | Listed in `.env.example`. The request overrides them. They are not read from the environment by the view |
+
+## API
+
+`GET` or `POST /api/v1/route`. Places are `City, ST`, `lat,lng`, or `{"lat","lng"}`. Defaults: 500 mile tank, 10 mpg, 10 mile corridor.
+
+Chicago → Houston, measured. Geometry shortened. 209 points in the live body (`docs/samples/chi-hou-cold.json`):
 
 ```json
 {
@@ -56,127 +143,91 @@ Response from that call (geometry shortened; the live body has 209 points, and t
     "geometry": {"type": "LineString", "coordinates": [[-87.68489, 41.83705], [-95.38881, 29.78576]]},
     "provider": "osrm"
   },
-  "assumptions": {
-    "tank_range_miles": 500,
-    "mpg": 10,
-    "start_tank": "full",
-    "initial_fuel_charged_usd": 0,
-    "corridor_miles": 10,
-    "detour_fuel": "not charged"
-  },
+  "total_gallons": 58.39,
+  "total_fuel_cost": 168.06,
   "fuel_stops": [
     {
       "opis_id": "69861",
       "name": "HUCKS FOOD & FUEL #379",
-      "address": "I-57, EXIT 53",
       "city": "Marion",
       "state": "IL",
       "price_per_gallon": 2.929,
-      "location": {"lat": 37.74033, "lng": -88.918029},
       "mile_marker": 312.1,
-      "cross_track_miles": 2.12,
       "gallons": 28.881,
       "cost": 84.59,
       "geocode_quality": "poi"
     }
   ],
-  "total_gallons": 58.39,
-  "total_fuel_cost": 168.06,
   "gap": null,
-  "map_path": "/api/v1/map?start=Chicago%2C+IL&finish=Houston%2C+TX&range_miles=500.0&mpg=10.0&corridor_miles=10.0",
   "external_calls": {"geocode": 0, "route": 1},
   "cache": "miss",
   "elapsed_ms": 1006.9
 }
 ```
 
-The other four stops on this plan are Texarkana, Marshall, Carthage, and Lufkin, all in Texas. New York, NY → Los Angeles, CA is 2,810.4 miles, 17 stops, **$697.28** (`docs/samples/ny-la-cold.json`). The last stop is Maverik in North Las Vegas at mile 2,517; the tank covers the rest of the way into Los Angeles.
+The other stops are Texarkana, Marshall, Carthage, and Lufkin. New York → Los Angeles is 2,810.4 miles, 17 stops, $697.28 (`docs/samples/ny-la-cold.json`).
 
-| Route | Cold `elapsed_ms` | Cold wall | Warm `elapsed_ms` | Warm wall |
-|---|---|---|---|---|
-| Chicago → Houston | 1006.9 | 1.01 s | 0.2 | 0.002 s |
-| New York → Los Angeles | 1860.8 | 1.86 s | 0.3 | 0.003 s |
+Every field, with units, and the error bodies (missing input, unknown city, Canada, infeasible `gap`) are in [docs/api.md](docs/api.md).
 
-A warm response has `"cache": "hit"` and `"external_calls": {"geocode": 0, "route": 0}`.
+## Performance
 
-Coordinates or `City, ST` cost one OSRM call. One street address adds one Photon call. Two street addresses add two. The same pair again costs nothing.
+Measured with `runserver`, no Redis, against the public OSRM demo. `elapsed_ms` is server time.
 
-## How the optimizer works
+| Route | Cold `elapsed_ms` | Cold wall | Calls | Warm `elapsed_ms` | Warm wall | Calls |
+|---|---|---|---|---|---|---|
+| Chicago → Houston | 1006.9 | 1.01 s | 1 route, 0 geocode | 0.2 | 0.002 s | 0 |
+| New York → Los Angeles | 1860.8 | 1.86 s | 1 route, 0 geocode | 0.3 | 0.003 s | 0 |
 
-1. Resolve the endpoints. Coordinates skip the network. `City, ST` hits `data/us_places.json` (US Census place centroids). Anything else is one Photon search, cached.
-2. Take one OSRM driving route with `overview=full` so the line is dense enough for a 10-mile corridor. Before the call, wait for a one-per-second lease. With `REDIS_URL` set, that lease is a Redis `SET NX PX 1000` shared by every Gunicorn worker. With `REDIS_URL` unset, the lease is in this process. If OSRM fails and `ORS_API_KEY` is set, one OpenRouteService directions call replaces it.
-3. Keep truck stops from `data/stations.json` whose cross-track distance to that line is at most `corridor_miles`. Unresolved stops are dropped.
-4. Plan purchases along the mile markers.
+A cold miss stores the finished plan. The key is the rounded coordinates, tank, mpg, corridor, and the station-file timestamp. A hit does not call OSRM or Photon. The road geometry is cached separately, so a station-file change does not repeat the OSRM call. Before a miss, the process takes a one-second lease so two workers cannot both call OSRM. The public demo's limit is per source IP, so other containers on the VPS share it.
 
-The tank starts full. That fuel has price 0 and is not billed. Work in miles; gallons are miles divided by `mpg`.
+## Data
 
-- A trip of `range_miles` or less has no stop and costs $0.
-- From the current point, if a pump you can reach is cheaper than the fuel you would buy here, buy only enough to reach it (or drive there on fuel you already have).
-- If the destination is inside a full tank and nothing ahead is cheaper, buy only enough to arrive empty.
-- If every pump still in range costs at least as much as the current pump, fill the tank and drive to the cheapest of them.
-- If nothing is in range even with a full tank, the plan is infeasible. The route is still returned, `fuel_stops` is empty, and `gap` says where the truck would run dry.
+`data/stations.json` was built offline. 6,738 stops: **860** Photon POIs whose name matches the stop, **5,823** city centroids (Census, or a fallback when the POI was not specific), **55** unresolved and excluded. How to regenerate: [docs/data.md](docs/data.md).
 
-Stops are the minimum dollar cost on this one route. The planner does not search for a cheaper highway, and it does not minimize the number of stops. Detour off the line is not added to the gallons. The corridor is only the test for "along the route".
+## Testing
 
-Duplicate rows for one OPIS Truckstop ID use the minimum retail price. There is no timestamp and no fuel-grade column.
+```bash
+python manage.py test fuel
+```
 
-## Assumptions and limits
+22 tests, no network. What each file covers: [docs/testing.md](docs/testing.md).
 
-- Both endpoints must be in the US. A trailing Canadian province is rejected. Coordinates must fall in the contiguous box, Alaska, or Hawaii. A point in Windsor, Ontario can still pass the box.
-- The CSV is truck-stop prices. California in the file is the Imperial Valley and Coachella Valley only. New York → Los Angeles still plans because the last Nevada stop leaves less than 500 miles. A route up the California coast can come back `feasible: false`.
-- Of 6,738 stops, 860 are a Photon POI whose name shares a distinctive word with the truck stop, 5,823 are a city centroid, and 55 have no coordinate and are excluded. A fuel POI is not kept when the name does not match, or when one coordinate was reused for different street addresses. A big-city centroid more than 10 miles from the interstate is not selected. `python3 scripts/geocode_stations.py --poi-only` resumes the POI pass.
-- The public OSRM demo allows about one request per second from a source IP and can refuse the address. On the VPS that budget is shared with everything else on `72.61.242.96`, including p1. Cached routes keep working.
-- Local `runserver` is one process, so the in-process limiter is enough. Production is two Gunicorn workers and requires `REDIS_URL`.
+## Troubleshooting
+
+macOS, Apple Silicon or Intel. The pins are pure Python and do not need Homebrew libraries.
+
+- `python3 --version` should be 3.12 or newer. `python3 -m venv .venv` uses that interpreter. If `venv` is missing, install Python from python.org. The project does not need `python3-venv` from Homebrew.
+- Activate with `source .venv/bin/activate`. `source .venv/bin/activate.fish` on fish. The prompt should show `(.venv)` before `pip` and `python`.
+- `Address already in use` means something is on port 8000. `lsof -nP -iTCP:8000 -sTCP:LISTEN`, stop it, or `python manage.py runserver 127.0.0.1:8001` and curl that port.
+- A first Chicago → Houston call takes about a second because OSRM does. A hang past about 15 seconds, or HTTP 502 `Routing failed`, is the public demo timing out or refusing. Wait and repeat the same URL. The second call should be a cache hit. Do not loop the endpoint. The limiter allows about one new route per second.
+- `Invalid HTTP_HOST header` on the laptop means `DJANGO_ALLOWED_HOSTS` was overridden and dropped `localhost`. Unset it, or set `localhost,127.0.0.1`.
 
 ## Docker deploy
 
-This is for the Hostinger VPS that already runs p1. Do not join p1's network, do not use p1's Redis or Postgres, and do not edit the p1 nginx site. The app listens on `127.0.0.1:8001` only. Host nginx and Certbot already own ports 80 and 443.
+For the VPS that already runs p1. Not required to try the API.
 
-Optional, and only with your yes, before the first start: the box has no swap and p1's app is about 1.1 GB of 3.9 GB.
-
-```bash
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swappiness.conf && sudo sysctl -p /etc/sysctl.d/99-swappiness.conf
-```
+`DJANGO_ALLOWED_HOSTS` in Compose is `spotter.kadamsahil.com`, `srv1208763.hstgr.cloud`, `127.0.0.1`, and `localhost`. The last two are there because the container healthcheck calls `http://127.0.0.1:8001/api/v1/health`. Without them Django returns 400 and Docker marks `spotter-web` unhealthy. Public requests still use the domain, through nginx.
 
 ```bash
 cp .env.example .env
-# Set DJANGO_DEBUG=0 and a real DJANGO_SECRET_KEY. Compose sets REDIS_URL itself.
+# DJANGO_DEBUG=0 and a real DJANGO_SECRET_KEY. Compose sets REDIS_URL.
 bash deploy/deploy.sh
-```
-
-`deploy/deploy.sh` checks that four `p1-` containers are running and that `https://setup.p1.kadamsahil.com/` returns 200, then runs `docker compose -p spotter up -d --build`. Caps are 512 MB and 0.75 CPU for `spotter-web`, 96 MB for `spotter-redis` (`redis:7-alpine`, not published, 64 MB `allkeys-lru`, AOF).
-
-DNS, in the Hostinger zone, one new record. Leave `setup.p1` alone. No AAAA.
-
-| Name | Type | Value |
-|---|---|---|
-| `spotter` | A | `72.61.242.96` |
-
-```bash
 sudo bash deploy/install-nginx.sh
 sudo ISSUE_CERT=1 bash deploy/install-nginx.sh
 ```
 
-That installs `deploy/nginx/spotter.kadamsahil.com.conf`, runs `nginx -t`, and reloads nginx. It never restarts nginx and never edits the p1 site. The second command runs `certbot --nginx -d spotter.kadamsahil.com`. A later run will not overwrite a file that already has a certificate unless `FORCE=1`.
+DNS is an A record `spotter` → `72.61.242.96`. No AAAA. Rollback, which does not stop p1: `docker compose -p spotter down`.
 
-```bash
-curl -fsS http://127.0.0.1:8001/api/v1/health
-curl -fsS https://spotter.kadamsahil.com/api/v1/health
-curl -fsS -o /dev/null -w 'p1 %{http_code}\n' https://setup.p1.kadamsahil.com/
-```
-
-Rollback, which does not stop p1:
-
-```bash
-docker compose -p spotter down
-```
+Steps, the p1 checks, and the swap note: [docs/deploy.md](docs/deploy.md).
 
 ## Postman
 
-Import `postman/spotter-fuel-route.postman_collection.json`. The collection variable `baseUrl` is `http://127.0.0.1:8000`. On the VPS set it to `https://spotter.kadamsahil.com`.
+Import `postman/spotter-fuel-route.postman_collection.json`. `baseUrl` is `http://127.0.0.1:8000`. On the VPS set it to `https://spotter.kadamsahil.com`.
 
-The requests are health, Chicago → Houston, New York → Los Angeles, the same Chicago pair as lat/lng, New York → Philadelphia (under 500 miles, no stops), a Toronto rejection, and the Chicago map.
+Requests: health, Chicago → Houston, New York → Los Angeles, Chicago as lat/lng, New York → Philadelphia (under 500 miles), Toronto rejected, Chicago map.
 
-Map tiles are © OpenStreetMap contributors. Routes are from the OSRM demo or OpenRouteService. Places are from Photon and the US Census Bureau. Prices are the assessment CSV.
+## Decisions
+
+One OSRM route, then the cheapest pumps on that line. Full tank at the start is not billed. Redis only when more than one process must share the cache. The longer write-up and the list of later work: [docs/decisions.md](docs/decisions.md).
+
+Map tiles © OpenStreetMap contributors. Routes from the OSRM demo or OpenRouteService. Places from Photon and the US Census Bureau. Prices from the assessment CSV.
