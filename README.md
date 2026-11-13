@@ -16,6 +16,7 @@ Backend Django REST API. It plans a US drive and the truck stops that minimize f
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Docker deploy](#docker-deploy)
+- [Twelve-factor](#twelve-factor)
 - [Postman](#postman)
 - [Decisions](#decisions)
 
@@ -36,12 +37,14 @@ This is a backend-only Django REST API. There is no separate frontend. `/api/v1/
 Python 3.12 or newer. No Redis, no API key, and no geocoding step. `data/stations.json` is already in the repo. If `REDIS_URL` is unset, the cache and the one-request-per-second OSRM limiter stay in this process.
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && python manage.py migrate && python manage.py runserver
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && export DJANGO_DEBUG=1 && python manage.py migrate && python manage.py runserver
 ```
+
+`DJANGO_DEBUG` defaults to off. Local `runserver` sets it to `1`. With debug on and no `DJANGO_SECRET_KEY`, settings use a dev-only key.
 
 ```bash
 curl -sS 'http://127.0.0.1:8000/api/v1/route?start=Chicago,%20IL&finish=Houston,%20TX'
-python manage.py test fuel
+DJANGO_DEBUG=1 python manage.py test fuel
 ```
 
 Dependencies in `requirements.txt` are pinned, including transitive packages. They are pure-Python wheels. Nothing needs GDAL or another system library.
@@ -66,15 +69,16 @@ Dependencies in `requirements.txt` are pinned, including transitive packages. Th
 | `fuel/services/regions.py` | US and Canadian state names. Point-in-US boxes |
 | `fuel/services/catalog.py` | CSV collapse: one row per OPIS ID, minimum price |
 | `fuel/templates/fuel/map.html` | Leaflet page. Popup text is escaped |
-| `fuel/tests/` | 22 tests. No network |
+| `fuel/tests/` | 25 tests. No network |
 | `data/stations.json` | Precomputed stops. Required at runtime |
 | `data/us_places.json` | Census place centroids for `City, ST` |
 | `data/fuel-prices.csv` | Source prices. Not read on a request |
 | `scripts/geocode_stations.py` | Resumable offline geocoder |
 | `scripts/build_places.py` | Rebuilds the Census gazetteer JSON |
-| `Dockerfile`, `docker-compose.yml` | Gunicorn on `127.0.0.1:8001` plus a private Redis |
-| `docker/entrypoint.sh` | Migrate, then Gunicorn. Refuses debug when `DOMAIN` is set |
-| `deploy/deploy.sh` | VPS start. Checks p1 first |
+| `Dockerfile`, `docker-compose.yml` | Gunicorn on `127.0.0.1:8001` plus a private Redis. Image tag is `IMAGE_TAG` (default `latest`) |
+| `docker-compose.override.example.yml` | Local debug on. Copy to `docker-compose.override.yml` |
+| `docker/entrypoint.sh` | Gunicorn, or the command you pass. Refuses debug when `DOMAIN` is set |
+| `deploy/deploy.sh` | VPS release from `origin/main`. Checks p1 first. Tags the image with the git SHA |
 | `deploy/install-nginx.sh` | New nginx site, `nginx -t`, reload, optional Certbot |
 | `deploy/nginx/spotter.kadamsahil.com.conf` | Proxy to `127.0.0.1:8001` |
 | `postman/spotter-fuel-route.postman_collection.json` | Collection. `baseUrl` defaults to localhost:8000 |
@@ -104,14 +108,15 @@ Detail is in [docs/decisions.md](docs/decisions.md).
 
 ## Environment
 
-Copy `.env.example` only if you want to override a default. Local `runserver` works with an empty environment.
+Copy `.env.example` only if you want to override a default. Local `runserver` needs `DJANGO_DEBUG=1`. The other variables can stay unset. `.env.example` itself has debug off and `DJANGO_SECRET_KEY=change-me`, so sourcing it will refuse to boot until you set `DJANGO_DEBUG=1` or replace the key.
 
 | Variable | Default | Used for |
 |---|---|---|
-| `DJANGO_DEBUG` | `1` | `0` on the VPS. Debug on plus `DOMAIN` set refuses to boot in Docker |
-| `DJANGO_SECRET_KEY` | dev key when debug is on | Required when `DJANGO_DEBUG=0` |
-| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Compose sets the public names and keeps `127.0.0.1,localhost` for the healthcheck |
-| `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | `https://spotter.kadamsahil.com` on the VPS. The API does not use session auth |
+| `DJANGO_DEBUG` | `0` | Set `1` for local `runserver` and the Compose override. Compose production forces `0`. Debug on plus `DOMAIN` set refuses to boot in Docker |
+| `DJANGO_SECRET_KEY` | dev key when debug is on | Required when debug is off. Empty, `change-me`, and `dev-only-not-for-production` refuse to boot |
+| `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` in settings | Compose default is `spotter.kadamsahil.com`, `srv1208763.hstgr.cloud`, `127.0.0.1`, `localhost` when this is unset or empty. A non-empty `.env` value replaces that list. Keep the loopback names for the healthcheck |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | empty in settings | Compose default `https://spotter.kadamsahil.com` when this is unset or empty. The API does not use session auth |
+| `LOG_LEVEL` | `INFO` | Django log level on stdout. `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `SQLITE_PATH` | `db.sqlite3` | Django tables only. `/data/db.sqlite3` in Docker |
 | `REDIS_URL` | empty | Empty: LocMem and an in-process limiter. Compose sets `redis://redis:6379/0` |
 | `OSRM_BASE_URL` | `https://router.project-osrm.org` | Driving route. No key |
@@ -121,7 +126,7 @@ Copy `.env.example` only if you want to override a default. Local `runserver` wo
 | `ROUTING_USER_AGENT` | `SpotterFuelRoute/1.0 (assessment)` | Sent on every outbound call |
 | `STATIONS_PATH` | `data/stations.json` | Stop file |
 | `PLACES_PATH` | `data/us_places.json` | Census places |
-| `DOMAIN` | empty | Set in Compose so a debug env cannot boot |
+| `DOMAIN` | empty in settings | Compose default `spotter.kadamsahil.com` when this is unset or empty. Debug on with `DOMAIN` set refuses to boot |
 | `WEB_CONCURRENCY` | `2` in the image | Gunicorn processes. Local `runserver` ignores it |
 | `GUNICORN_THREADS` | `4` in the image | Threads per worker |
 | `CORRIDOR_MILES`, `TANK_RANGE_MILES`, `MPG` | `10`, `500`, `10` | Listed in `.env.example`. The request overrides them. They are not read from the environment by the view |
@@ -187,10 +192,10 @@ A cold miss stores the finished plan. The key is the rounded coordinates, tank, 
 ## Testing
 
 ```bash
-python manage.py test fuel
+DJANGO_DEBUG=1 python manage.py test fuel
 ```
 
-22 tests, no network. What each file covers: [docs/testing.md](docs/testing.md).
+25 tests, no network. What each file covers: [docs/testing.md](docs/testing.md).
 
 ## Troubleshooting
 
@@ -201,24 +206,63 @@ macOS, Apple Silicon or Intel. The pins are pure Python and do not need Homebrew
 - `Address already in use` means something is on port 8000. `lsof -nP -iTCP:8000 -sTCP:LISTEN`, stop it, or `python manage.py runserver 127.0.0.1:8001` and curl that port.
 - A first Chicago → Houston call takes about a second because OSRM does. A hang past about 15 seconds, or HTTP 502 `Routing failed`, is the public demo timing out or refusing. Wait and repeat the same URL. The second call should be a cache hit. Do not loop the endpoint. The limiter allows about one new route per second.
 - `Invalid HTTP_HOST header` on the laptop means `DJANGO_ALLOWED_HOSTS` was overridden and dropped `localhost`. Unset it, or set `localhost,127.0.0.1`.
+- `DJANGO_SECRET_KEY must be a unique value` means debug is off and the key is missing or still `change-me`. For local `runserver` and tests, `export DJANGO_DEBUG=1`.
 
 ## Docker deploy
 
 For the VPS that already runs p1. Not required to try the API.
 
-`DJANGO_ALLOWED_HOSTS` in Compose is `spotter.kadamsahil.com`, `srv1208763.hstgr.cloud`, `127.0.0.1`, and `localhost`. The last two are there because the container healthcheck calls `http://127.0.0.1:8001/api/v1/health`. Without them Django returns 400 and Docker marks `spotter-web` unhealthy. Public requests still use the domain, through nginx.
+`DJANGO_ALLOWED_HOSTS` defaults in Compose to `spotter.kadamsahil.com`, `srv1208763.hstgr.cloud`, `127.0.0.1`, and `localhost` when the variable is unset or empty. A non-empty value in `.env` replaces that list. `127.0.0.1` and `localhost` stay in the default because the container healthcheck calls `http://127.0.0.1:8001/api/v1/health`. Without them Django returns 400 and Docker marks `spotter-web` unhealthy. Public requests still use the domain, through nginx.
 
 ```bash
 cp .env.example .env
-# DJANGO_DEBUG=0 and a real DJANGO_SECRET_KEY. Compose sets REDIS_URL.
+# Set a unique DJANGO_SECRET_KEY. Leave DJANGO_DEBUG=0. Compose sets REDIS_URL.
 bash deploy/deploy.sh
 sudo bash deploy/install-nginx.sh
 sudo ISSUE_CERT=1 bash deploy/install-nginx.sh
 ```
 
-DNS is an A record `spotter` → `72.61.242.96`. No AAAA. Rollback, which does not stop p1: `docker compose -p spotter down`.
+`deploy/deploy.sh` checks out `origin/main`, builds `spotter-web:<git short sha>`, and tags `latest` as an alias. `IMAGE_TAG` in Compose defaults to `latest`, so an `.env` without that variable still starts. The previous tag is kept in `.deploy-previous-tag`.
+
+DNS is an A record `spotter` → `72.61.242.96`. No AAAA. Previous image, p1 stays up: `IMAGE_TAG="$(cat .deploy-previous-tag)" docker compose -p spotter up -d --no-build`. Stop Spotter and keep its volumes: `docker compose -p spotter down`.
+
+One-off admin command, on the VPS with the project name:
+
+```bash
+docker compose -p spotter run --rm web python manage.py <cmd>
+```
+
+Locally the same form is `docker compose run --rm web python manage.py <cmd>`.
+
+### Local Docker
+
+Same Compose file as the VPS. The override turns debug on and clears `DOMAIN` so the entrypoint will boot:
+
+```bash
+cp docker-compose.override.example.yml docker-compose.override.yml
+docker compose up --build
+```
+
+Web and Redis start. The app is at `http://127.0.0.1:8001`. Leave `docker-compose.override.yml` off the VPS. `deploy/deploy.sh` exits if that file is present.
 
 Steps, the p1 checks, and the swap note: [docs/deploy.md](docs/deploy.md).
+
+## Twelve-factor
+
+| Factor | Where it lives |
+|---|---|
+| Codebase | This git repo. `deploy/deploy.sh` fetches and checks out `origin/main` |
+| Dependencies | Pinned `requirements.txt`. Image `python:3.12.16-slim` |
+| Config | Environment variables. Debug defaults off in settings and the image. Debug off refuses a missing or dev `DJANGO_SECRET_KEY`. Compose hostnames default to the current production names when unset |
+| Backing services | `REDIS_URL`, `SQLITE_PATH`, `OSRM_BASE_URL`, `PHOTON_BASE_URL`, `ORS_BASE_URL` |
+| Build, release, run | `deploy/deploy.sh` builds `spotter-web:<short sha>`, tags `latest`, and records the previous tag. Compose `IMAGE_TAG` defaults to `latest` |
+| Processes | Gunicorn workers stay stateless. Finished plans are stored in Redis or LocMem |
+| Port binding | Gunicorn binds `0.0.0.0:8001`. Compose publishes `127.0.0.1:8001` |
+| Concurrency | `WEB_CONCURRENCY` and `GUNICORN_THREADS` |
+| Disposability | Compose `stop_grace_period: 15s`. Gunicorn `--graceful-timeout 10` |
+| Dev/prod parity | One image and `docker-compose.yml`. `docker-compose.override.example.yml` runs web and Redis locally with debug on |
+| Logs | Django `LOGGING` writes stdout. `LOG_LEVEL` defaults to `INFO`. Gunicorn access and error logs go to stdout and stderr |
+| Admin processes | `docker compose run --rm web python manage.py <cmd>`. The entrypoint starts Gunicorn when no command is passed |
 
 ## Postman
 

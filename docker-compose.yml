@@ -3,20 +3,23 @@ name: spotter
 services:
   web:
     container_name: spotter-web
+    image: "spotter-web:${IMAGE_TAG:-latest}"
     build: .
     env_file:
       - path: .env
         required: false
     environment:
+      # Production stays off. Local debug is docker-compose.override.yml only.
       DJANGO_DEBUG: "0"
       SQLITE_PATH: /data/db.sqlite3
       REDIS_URL: redis://redis:6379/0
       WEB_CONCURRENCY: "2"
       GUNICORN_THREADS: "4"
-      DOMAIN: spotter.kadamsahil.com
-      # 127.0.0.1 and localhost stay so the container healthcheck (Host: 127.0.0.1) is not a 400.
-      DJANGO_ALLOWED_HOSTS: spotter.kadamsahil.com,srv1208763.hstgr.cloud,127.0.0.1,localhost
-      DJANGO_CSRF_TRUSTED_ORIGINS: https://spotter.kadamsahil.com
+      DOMAIN: "${DOMAIN:-spotter.kadamsahil.com}"
+      # Loopback stays in the default so the healthcheck Host: 127.0.0.1 is not a 400.
+      # A non-empty DJANGO_ALLOWED_HOSTS in .env replaces this whole list.
+      DJANGO_ALLOWED_HOSTS: "${DJANGO_ALLOWED_HOSTS:-spotter.kadamsahil.com,srv1208763.hstgr.cloud,127.0.0.1,localhost}"
+      DJANGO_CSRF_TRUSTED_ORIGINS: "${DJANGO_CSRF_TRUSTED_ORIGINS:-https://spotter.kadamsahil.com}"
     ports:
       - "127.0.0.1:8001:8001"
     volumes:
@@ -28,6 +31,7 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    stop_grace_period: 15s
     networks:
       - spotter
     logging:

@@ -1,0 +1,12 @@
+# Local only. Copy to docker-compose.override.yml (gitignored), then:
+#   docker compose up --build
+# That starts web and Redis with debug on. The app listens on http://127.0.0.1:8001.
+# Do not copy this file to docker-compose.override.yml on the VPS.
+# deploy/deploy.sh exits if that override is present. Production debug stays off.
+
+services:
+  web:
+    environment:
+      DJANGO_DEBUG: "1"
+      # The entrypoint refuses to boot when debug is on and DOMAIN is set.
+      DOMAIN: ""

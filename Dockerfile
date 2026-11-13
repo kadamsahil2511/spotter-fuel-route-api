@@ -1,9 +1,8 @@
-FROM python:3.12-slim
+FROM python:3.12.16-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    DJANGO_DEBUG=1 \
-    DJANGO_SECRET_KEY=build-only-not-used-at-runtime
+    DJANGO_DEBUG=0
 
 WORKDIR /app
 
@@ -15,8 +14,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=app:app . .
+# collectstatic imports settings. Debug on for this build step only; the image default stays off.
 RUN chmod +x docker/entrypoint.sh \
-    && python manage.py collectstatic --noinput
+    && DJANGO_DEBUG=1 python manage.py collectstatic --noinput
 
 USER app
 EXPOSE 8001
