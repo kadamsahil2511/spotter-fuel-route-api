@@ -5,11 +5,22 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
+DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
+# Placeholders from local docs and older images. Production must set its own key.
+_INSECURE_SECRET_KEYS = frozenset(
+    {
+        "",
+        "change-me",
+        "dev-only-not-for-production",
+        "build-only-not-used-at-runtime",
+    }
+)
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip()
+if not DEBUG and SECRET_KEY in _INSECURE_SECRET_KEYS:
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY must be a unique value when DJANGO_DEBUG is off"
+    )
 if not SECRET_KEY:
-    if not DEBUG:
-        raise RuntimeError("DJANGO_SECRET_KEY is required when DJANGO_DEBUG=0")
     SECRET_KEY = "dev-only-not-for-production"
 
 ALLOWED_HOSTS = [
@@ -113,3 +124,29 @@ ROUTING_USER_AGENT = os.environ.get("ROUTING_USER_AGENT", "SpotterFuelRoute/1.0 
 STATIONS_PATH = os.environ.get("STATIONS_PATH", str(BASE_DIR / "data" / "stations.json"))
 PLACES_PATH = os.environ.get("PLACES_PATH", str(BASE_DIR / "data" / "us_places.json"))
 DOMAIN = os.environ.get("DOMAIN", "").strip()
+
+_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+if _LOG_LEVEL not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+    _LOG_LEVEL = "INFO"
+LOG_LEVEL = _LOG_LEVEL
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "console": {
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "console",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+}

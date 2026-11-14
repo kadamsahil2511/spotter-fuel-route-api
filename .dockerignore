@@ -8,3 +8,6 @@ db.sqlite3-shm
 staticfiles
 *.log
 .env
+docker-compose.override.yml
+.deploy-tag
+.deploy-previous-tag

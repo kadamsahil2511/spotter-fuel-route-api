@@ -17,7 +17,7 @@ Spotter is Compose project `spotter`, containers `spotter-web` and `spotter-redi
 
 ## Healthcheck and allowed hosts
 
-The image healthcheck and the Compose healthcheck request `http://127.0.0.1:8001/api/v1/health` from inside the container. Django sees `Host: 127.0.0.1`. `DJANGO_ALLOWED_HOSTS` in `docker-compose.yml` therefore includes `127.0.0.1` and `localhost` along with `spotter.kadamsahil.com` and `srv1208763.hstgr.cloud`. Public traffic still arrives as `spotter.kadamsahil.com` through nginx. Do not drop the loopback names or the container stays `unhealthy` (HTTP 400).
+The image healthcheck and the Compose healthcheck request `http://127.0.0.1:8001/api/v1/health` from inside the container. Django sees `Host: 127.0.0.1`. The Compose default for `DJANGO_ALLOWED_HOSTS` includes `127.0.0.1` and `localhost` along with `spotter.kadamsahil.com` and `srv1208763.hstgr.cloud` when the variable is unset or empty. A non-empty `.env` value replaces that list. Public traffic still arrives as `spotter.kadamsahil.com` through nginx. Keep the loopback names or the container stays `unhealthy` (HTTP 400).
 
 ## Commands
 
@@ -25,14 +25,32 @@ On the VPS, in a clone of this repo:
 
 ```bash
 cp .env.example .env
-# DJANGO_DEBUG=0 and a real DJANGO_SECRET_KEY. Compose sets REDIS_URL.
+# A unique DJANGO_SECRET_KEY. Leave DJANGO_DEBUG=0. Compose sets REDIS_URL.
 bash deploy/deploy.sh
 ```
 
-`deploy/deploy.sh` refuses to start unless four `p1-` containers are running and `https://setup.p1.kadamsahil.com/` returns 200. It then runs:
+`deploy/deploy.sh` refuses to start unless four `p1-` containers are running and `https://setup.p1.kadamsahil.com/` returns 200. It fetches `origin/main`, checks out that commit, and runs:
 
 ```bash
-docker compose -p spotter up -d --build
+IMAGE_TAG=<git short sha> docker compose -p spotter up -d --build
+```
+
+The image is `spotter-web:<sha>`. After the health check passes, that image is also tagged `latest`. The previous tag is written to `.deploy-previous-tag` and left on disk. If Compose fails while replacing the container, or the health check fails, and a previous tag exists, the script starts that tag again. `DJANGO_ALLOWED_HOSTS` must list `127.0.0.1` as its own entry. A value that only contains those characters inside another host, such as `127.0.0.10`, is refused. `IMAGE_TAG` defaults to `latest` when Compose is started without the script, so an `.env` that never mentions `IMAGE_TAG` still resolves.
+
+The first run of this script on an existing clone has to update the checkout before the new script is what executes:
+
+```bash
+git fetch origin main && git checkout -f -B main origin/main && bash deploy/deploy.sh
+```
+
+Later deploys are `bash deploy/deploy.sh`. That checkout discards tracked local edits. `.env` is untracked and stays.
+
+No new variable is required. Optional: `LOG_LEVEL` (default `INFO`). `DJANGO_SECRET_KEY` has to be unique. The app refuses to boot when debug is off and the key is empty, `change-me`, or `dev-only-not-for-production`. The script checks that before it replaces the container. If `.env` still has `DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1` from the old example, the script keeps the production host list for that deploy. Remove that line, or set the public names plus `127.0.0.1,localhost`, before a manual `docker compose up`. Empty `DOMAIN` and `DJANGO_CSRF_TRUSTED_ORIGINS` keep the Compose defaults (`spotter.kadamsahil.com` and `https://spotter.kadamsahil.com`). Do not copy `docker-compose.override.example.yml` to `docker-compose.override.yml` on the server. The script exits when that override is present.
+
+Admin commands are one-off processes. The entrypoint starts Gunicorn when it is given no command:
+
+```bash
+docker compose -p spotter run --rm web python manage.py <cmd>
 ```
 
 DNS, one new record in the Hostinger zone. Do not change `setup.p1`. No AAAA.
@@ -54,7 +72,13 @@ curl -fsS https://spotter.kadamsahil.com/api/v1/health
 curl -fsS -o /dev/null -w 'p1 %{http_code}\n' https://setup.p1.kadamsahil.com/
 ```
 
-Rollback of Spotter only. Volumes are kept. p1 is not stopped.
+Previous image. Volumes stay. p1 stays up. `.deploy-previous-tag` is the release that was running before the last successful deploy.
+
+```bash
+IMAGE_TAG="$(cat .deploy-previous-tag)" docker compose -p spotter up -d --no-build
+```
+
+Stop Spotter and keep volumes:
 
 ```bash
 docker compose -p spotter down
