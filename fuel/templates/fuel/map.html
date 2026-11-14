@@ -46,7 +46,8 @@
       el.textContent = String(value);
       return el.innerHTML;
     }
-    const map = L.map("map");
+    // Vector layers need a view before they are added, or Leaflet throws.
+    const map = L.map("map").setView([plan.start.lat, plan.start.lng], 5);
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18,
       // OSM tile policy needs a Referer. Django sends Referrer-Policy: same-origin,
