@@ -43,12 +43,15 @@
     const plan = JSON.parse(document.getElementById("plan-data").textContent);
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, (ch) => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+        "&": "&", "<": "<", ">": ">", '"': """, "'": "&#39;"
       }[ch]));
     }
     const map = L.map("map");
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18,
+      // OSM tile policy needs a Referer. Django sends Referrer-Policy: same-origin,
+      // which strips it on cross-origin tile requests and gets a 403.
+      referrerPolicy: "strict-origin-when-cross-origin",
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors. Routing by OSRM / OpenRouteService. Geocoding by Photon and the US Census.'
     }).addTo(map);
     const line = L.geoJSON({type: "Feature", geometry: plan.route.geometry, properties: {}}, {
