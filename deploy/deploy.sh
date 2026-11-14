@@ -195,7 +195,7 @@ printf '%s\n' "$IMAGE_TAG" > .deploy-tag
 
 echo "Post-flight p1"
 docker ps --filter name=p1- --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-curl -fsS -o /dev/null -w 'p1 %{http_code}\n' https://setup.p1.kadamsahil.com/
+curl -fsS -o /dev/null -w 'p1 %{http_code}\n' https://setup.p1.kadamsahil.com/health
 
 echo
 echo "spotter-web:${IMAGE_TAG} is running and tagged latest."
