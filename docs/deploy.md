@@ -29,7 +29,7 @@ cp .env.example .env
 bash deploy/deploy.sh
 ```
 
-`deploy/deploy.sh` refuses to start unless four `p1-` containers are running and `https://setup.p1.kadamsahil.com/` returns 200. It fetches `origin/main`, checks out that commit, and runs:
+`deploy/deploy.sh` refuses to start unless four `p1-` containers are running and `https://setup.p1.kadamsahil.com/health` returns 200. It fetches `origin/main`, checks out that commit, and runs:
 
 ```bash
 IMAGE_TAG=<git short sha> docker compose -p spotter up -d --build
