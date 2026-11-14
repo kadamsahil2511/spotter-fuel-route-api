@@ -605,7 +605,7 @@ Pre-flight, before anything is changed:
 
 ```
 docker ps --filter name=p1- --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-curl -fsS -o /dev/null -w 'p1 %{http_code}\n' https://setup.p1.kadamsahil.com/
+curl -fsS -o /dev/null -w 'p1 %{http_code}\n' https://setup.p1.kadamsahil.com/health
 ss -ltnp | awk 'NR==1 || /:80 |:443 |:3000|:8080|:8001/'
 ```
 
@@ -617,7 +617,7 @@ Then:
 2. Put the production env on the server only: `DJANGO_SECRET_KEY`, `DJANGO_DEBUG=0`, allowed hosts, CSRF origin, `SQLITE_PATH=/data/db.sqlite3`, `REDIS_URL=redis://redis:6379/0`, `WEB_CONCURRENCY=2`, `GUNICORN_THREADS=4`, and `ORS_API_KEY` if the fallback is turned on. Do not commit that file.
 3. From the repo directory: `docker compose -p spotter up -d --build`. This builds `spotter-web` and `spotter-redis`. It does not stop, start, or recreate any `p1-` container.
 4. `curl -fsS http://127.0.0.1:8001/api/v1/health`.
-5. Repeat the p1 pre-flight. Four `p1-` containers still Up, `https://setup.p1.kadamsahil.com/` still 200. If either check fails, roll back before touching nginx.
+5. Repeat the p1 pre-flight. Four `p1-` containers still Up, `https://setup.p1.kadamsahil.com/health` still 200. If either check fails, roll back before touching nginx.
 6. Install the nginx site file, symlink it, `nginx -t && systemctl reload nginx`. On a failed test, remove the symlink and do not reload.
 7. `certbot --nginx -d spotter.kadamsahil.com`, then `nginx -t && systemctl reload nginx`.
 8. `curl -fsS https://spotter.kadamsahil.com/api/v1/health`, then the p1 check again.

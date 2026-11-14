@@ -104,7 +104,7 @@ if [[ "$p1_count" -lt 4 ]]; then
   exit 1
 fi
 
-if curl -fsS -o /dev/null -w '%{http_code}' https://setup.p1.kadamsahil.com/ | grep -qx 200; then
+if curl -fsS -o /dev/null -w '%{http_code}' https://setup.p1.kadamsahil.com/health | grep -qx 200; then
   echo "p1 HTTP 200"
 else
   echo "p1 did not return HTTP 200. Stop." >&2
